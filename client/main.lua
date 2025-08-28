@@ -1,216 +1,28 @@
-local QBCore = exports['qb-core']:GetCoreObject()
-local emailSend = false
+
 local isBusy = false
-
-RegisterNetEvent("QBCore:Client:OnPlayerLoaded", function()
-    TriggerServerEvent("qb-scrapyard:server:LoadVehicleList")
-end)
-
-CreateThread(function()
-    for id in pairs(Config.Locations) do
-        local blip = AddBlipForCoord(Config.Locations[id]["main"].x, Config.Locations[id]["main"].y, Config.Locations[id]["main"].z)
-        SetBlipSprite(blip, 380)
-        SetBlipDisplay(blip, 4)
-        SetBlipScale(blip, 0.7)
-        SetBlipAsShortRange(blip, true)
-        SetBlipColour(blip, 9)
-        BeginTextCommandSetBlipName("STRING")
-        AddTextComponentSubstringPlayerName(Lang:t('text.scrapyard'))
-        EndTextCommandSetBlipName(blip)
-    end
-end)
-
+local Blips = {}
+local scrapPoly = {}
 local listen = false
-local function KeyListener(type)
-    CreateThread(function()
-        listen = true
-        while listen do
-            if IsControlPressed(0, 38) then
-                exports['qb-core']:KeyPressed()
-            if type == 'deliver' then
-                ScrapVehicle()
-            else
-                if not IsPedInAnyVehicle(PlayerPedId()) and not emailSend then
-                    CreateListEmail()
-                end
-            end
-            break
-            end
-            Wait(0)
-        end
-    end)
+
+local function CreateListEmail(location)
+    local vehicleList = QBCore.Functions.TriggerCallback('qb-scrapyard:server:getVehicleList', location)
+    if not vehicleList then return end
+    TriggerServerEvent('qb-phone:server:sendNewMail', {
+        sender = Lang:t('email.sender'),
+        subject = Lang:t('email.subject'),
+        message = Lang:t('email.message').. table.concat(vehicleList, ",  \n  "),
+        button = {}
+    })
 end
 
-CreateThread(function()
-    local scrapPoly = {}
-    for i = 1,#Config.Locations,1 do
-        for k,v in pairs(Config.Locations[i]) do
-            if k ~= 'main' then
-                if Config.UseTarget then
-                    if k == 'deliver' then
-                        exports["qb-target"]:AddBoxZone("yard"..i, v.coords, v.length, v.width, {
-                            name = "yard"..i,
-                            heading = v.heading,
-                            minZ = v.coords.z - 1,
-                            maxZ = v.coords.z + 1,
-                        }, {
-                                options = {
-                                    {
-                                        action = function()
-                                            ScrapVehicle()
-                                        end,
-                                        icon = "fa fa-wrench",
-                                        label = Lang:t('text.disassemble_vehicle_target'),
-                                    }
-                                },
-                            distance = 3
-                        })
-                    else
-                        exports["qb-target"]:AddBoxZone("list"..i, v.coords, v.length, v.width, {
-                            name = "list"..i,
-                            heading = v.heading,
-                            minZ = v.coords.z - 1,
-                            maxZ = v.coords.z + 1,
-                        }, {
-                            options = {
-                                {
-                                    action = function()
-                                        if not IsPedInAnyVehicle(PlayerPedId()) and not emailSend then
-                                            CreateListEmail()
-                                        end
-                                    end,
-                                    icon = "fa fa-envelop",
-                                    label = Lang:t('text.email_list_target'),
-                                }
-                            },
-                            distance = 1.5
-                        })
-                    end
-                else
-                    scrapPoly[#scrapPoly+1] = BoxZone:Create(vector3(v.coords.x, v.coords.y, v.coords.z), v.length, v.width, {
-                        heading = v.heading,
-                        name = k..i,
-                        debugPoly = false,
-                        minZ = v.coords.z - 1,
-                        maxZ = v.coords.z + 1,
-                    })
-                    local scrapCombo = ComboZone:Create(scrapPoly, {name = "scrapPoly"})
-                    scrapCombo:onPlayerInOut(function(isPointInside)
-                        if isPointInside then
-                            if not isBusy then
-                                if k == 'deliver' then
-                                    exports['qb-core']:DrawText(Lang:t('text.disassemble_vehicle'),'left')
-                                else
-                                    exports['qb-core']:DrawText(Lang:t('text.email_list'),'left')
-                                end
-                                KeyListener(k)
-                            end
-                        else
-                            listen = false
-                            exports['qb-core']:HideText()
-                        end
-                    end)
-                end
-            end
-        end
-    end
-end)
-
-RegisterNetEvent('qb-scapyard:client:setNewVehicles', function(vehicleList)
-    Config.CurrentVehicles = vehicleList
-end)
-
-function CreateListEmail()
-    if Config.CurrentVehicles ~= nil and next(Config.CurrentVehicles) ~= nil then
-        emailSend = true
-        local vehicleList = ""
-        for k, v in pairs(Config.CurrentVehicles) do
-            if Config.CurrentVehicles[k] ~= nil then
-                local vehicleInfo = QBCore.Shared.Vehicles[v]
-                if vehicleInfo ~= nil then
-                    vehicleList = vehicleList  .. vehicleInfo["brand"] .. " " .. vehicleInfo["name"] .. "<br />"
-                end
-            end
-        end
-        SetTimeout(math.random(15000, 20000), function()
-            emailSend = false
-            TriggerServerEvent('qb-phone:server:sendNewMail', {
-                sender = Lang:t('email.sender'),
-                subject = Lang:t('email.subject'),
-                message = Lang:t('email.message').. vehicleList,
-                button = {}
-            })
-        end)
-    else
-        QBCore.Functions.Notify(Lang:t('error.demolish_vehicle'), "error")
+local function loadAnimDict(dict)
+    while (not HasAnimDictLoaded(dict)) do
+        RequestAnimDict(dict)
+        Wait(5)
     end
 end
 
-function ScrapVehicle()
-    local vehicle = GetVehiclePedIsIn(PlayerPedId(), true)
-    if vehicle ~= 0 and vehicle ~= nil then
-        if not isBusy then
-            if GetPedInVehicleSeat(vehicle, -1) == PlayerPedId() then
-                if IsVehicleValid(GetEntityModel(vehicle)) then
-                    local vehiclePlate = QBCore.Functions.GetPlate(vehicle)
-                    QBCore.Functions.TriggerCallback('qb-scrapyard:checkOwnerVehicle',function(retval)
-                        if retval then
-                            isBusy = true
-                            local scrapTime = math.random(28000, 37000)
-                            ScrapVehicleAnim(scrapTime)
-                            QBCore.Functions.Progressbar("scrap_vehicle", Lang:t('text.demolish_vehicle'), scrapTime, false, true, {
-                                disableMovement = true,
-                                disableCarMovement = true,
-                                disableMouse = false,
-                                disableCombat = true,
-                            }, {}, {}, {}, function() -- Done
-                                TriggerServerEvent("qb-scrapyard:server:ScrapVehicle", GetVehicleKey(GetEntityModel(vehicle)))
-                                SetEntityAsMissionEntity(vehicle, true, true)
-                                DeleteVehicle(vehicle)
-                                isBusy = false
-                            end, function() -- Cancel
-                                isBusy = false
-                                QBCore.Functions.Notify(Lang:t('error.canceled'), "error")
-                            end)
-                        else
-                            QBCore.Functions.Notify(Lang:t('error.smash_own'), "error")
-                        end
-                    end,vehiclePlate)
-                else
-                    QBCore.Functions.Notify(Lang:t('error.cannot_scrap'), "error")
-                end
-            else
-                QBCore.Functions.Notify(Lang:t('error.not_driver'), "error")
-            end
-        end
-    end
-end
-
-function IsVehicleValid(vehicleModel)
-    local retval = false
-    if Config.CurrentVehicles ~= nil and next(Config.CurrentVehicles) ~= nil then
-        for k in pairs(Config.CurrentVehicles) do
-            if Config.CurrentVehicles[k] ~= nil and GetHashKey(Config.CurrentVehicles[k]) == vehicleModel then
-                retval = true
-            end
-        end
-    end
-    return retval
-end
-
-function GetVehicleKey(vehicleModel)
-    local retval = 0
-    if Config.CurrentVehicles ~= nil and next(Config.CurrentVehicles) ~= nil then
-        for k in pairs(Config.CurrentVehicles) do
-            if GetHashKey(Config.CurrentVehicles[k]) == vehicleModel then
-                retval = k
-            end
-        end
-    end
-    return retval
-end
-
-function ScrapVehicleAnim(time)
+local function ScrapVehicleAnim(time)
     time = (time / 1000)
     loadAnimDict("mp_car_bomb")
     TaskPlayAnim(PlayerPedId(), "mp_car_bomb", "car_bomb_mechanic" ,3.0, 3.0, -1, 16, 0, false, false, false)
@@ -228,9 +40,191 @@ function ScrapVehicleAnim(time)
     end)
 end
 
-function loadAnimDict(dict)
-    while (not HasAnimDictLoaded(dict)) do
-        RequestAnimDict(dict)
-        Wait(5)
+local function ScrapVehicle(loc)
+    if isBusy then return end
+    local vehicle = GetVehiclePedIsIn(PlayerPedId(), true)
+    if vehicle ~= 0 and vehicle ~= nil then
+        if GetPedInVehicleSeat(vehicle, -1) == PlayerPedId() then
+                local validVehicle = QBCore.Functions.TriggerCallback('qb-scrapyard:server:verifyVehicle', GetDisplayNameFromVehicleModel(GetEntityModel(vehicle)), loc)
+                if not validVehicle.bool then
+                    QBCore.Functions.Notify(Lang:t('error.cannot_scrap'), "error")
+                    return
+                end
+                isBusy = true
+                ScrapVehicleAnim(validVehicle.time)
+                QBCore.Functions.Progressbar("scrap_vehicle", Lang:t('text.demolish_vehicle'), validVehicle.time, false, true, {
+                    disableMovement = true,
+                    disableCarMovement = true,
+                    disableMouse = false,
+                    disableCombat = true,
+                }, {}, {}, {}, function()
+                    local success = QBCore.Functions.TriggerCallback("qb-scrapyard:server:ScrapVehicle", loc, GetDisplayNameFromVehicleModel(GetEntityModel(vehicle)))
+                    if success then
+                        SetEntityAsMissionEntity(vehicle, true, true)
+                        DeleteVehicle(vehicle)
+                    else
+                        QBCore.Functions.Notify(Lang:t('error.cannot_scrap'), "error")
+                    end
+                    isBusy = false
+                end, function()
+                    TriggerServerEvent('qb-scrapyard:server:cancelScrap')
+                    isBusy = false
+                    QBCore.Functions.Notify(Lang:t('error.canceled'), "error")
+                end)
+        else
+            QBCore.Functions.Notify(Lang:t('error.not_driver'), "error")
+        end
     end
 end
+
+local function loadBlips()
+    for key, data in pairs(Config.Locations) do
+        if data.blip then
+            Blips[key] = AddBlipForCoord(data.blip.coords.x, data.blip.coords.y, data.blip.coords.z)
+            SetBlipSprite(Blips[key], data.blip.sprite or 380)
+            SetBlipDisplay(Blips[key], data.blip.display or 4)
+            SetBlipScale(Blips[key], data.blip.scale or 0.7)
+            SetBlipAsShortRange(Blips[key], true)
+            SetBlipColour(Blips[key], data.blip.color or 9)
+            BeginTextCommandSetBlipName("STRING")
+            AddTextComponentSubstringPlayerName(data.blip.text or Lang:t('text.scrapyard'))
+            EndTextCommandSetBlipName(Blips[key])
+        end
+    end
+end
+
+loadBlips()
+
+local function unloadBlips()
+    for k in pairs(Blips) do
+        RemoveBlip(Blips[k])
+        Blips[k] = nil
+    end
+end
+
+local function removeZones()
+    if Config.UseTarget then
+        for k, v in pairs (Config.Locations) do
+            exports["qb-target"]:RemoveZone("yard"..k)
+            exports["qb-target"]:RemoveZone("list"..k)
+        end
+    else
+        if scrapPoly ~= nil and next(scrapPoly) ~= nil then
+            for k in pairs(scrapPoly) do
+                scrapPoly[k]:destroy()
+                scrapPoly[k] = nil
+            end
+        end
+    end
+end
+
+AddEventHandler('onResourceStop', function(resource)
+    if resource == GetCurrentResourceName() then
+        unloadBlips()
+        removeZones()
+    end
+end)
+
+
+
+local function listener(type, loc)
+    listen = true
+    CreateThread(function()
+        while listen do
+            if IsControlPressed(0, 38) then
+                listen = false
+                exports['qb-core']:HideText()
+                if type == 'deliver' then
+                    ScrapVehicle(loc)
+                else
+                    if not IsPedInAnyVehicle(PlayerPedId())  then
+                        CreateListEmail(loc)
+                    end
+                end
+                break
+            end
+            Wait(0)
+        end
+    end)
+end
+
+local function initZones()
+    for k, v in pairs (Config.Locations) do
+        if Config.UseTarget then
+            exports["qb-target"]:AddBoxZone("yard"..k, v.deliver.coords, v.deliver.length, v.deliver.width, {
+                name = "yard"..k,
+                heading = v.deliver.heading,
+                minZ = v.deliver.coords.z - 1,
+                maxZ = v.deliver.coords.z + 1,
+            }, {
+                options = {
+                    {
+                        action = function()
+                            ScrapVehicle(k)
+                        end,
+                        icon = "fa fa-wrench",
+                        label = Lang:t('text.disassemble_vehicle_target'),
+                    }
+                },
+                distance = 3
+            })
+            exports["qb-target"]:AddBoxZone("list"..k, v.list.coords, v.list.length, v.list.width, {
+                name = "list"..k,
+                heading = v.list.heading,
+                minZ = v.list.coords.z - 1,
+                maxZ = v.list.coords.z + 1,
+            }, {
+                options = {
+                    {
+                        action = function()
+                            if not IsPedInAnyVehicle(PlayerPedId(), false) then
+                                CreateListEmail(k)
+                            end
+                        end,
+                        icon = "fa fa-envelop",
+                        label = Lang:t('text.email_list_target'),
+                    }
+                },
+                distance = 1.5
+            })
+        else
+            local deliverZone = BoxZone:Create(vector3(v.deliver.coords.x, v.deliver.coords.y, v.deliver.coords.z), v.deliver.length, v.deliver.width, {
+                heading = v.deliver.heading,
+                name = "deliver"..k,
+                debugPoly = false,
+                minZ = v.deliver.coords.z - 1,
+                maxZ = v.deliver.coords.z + 1,
+            })
+            deliverZone:onPlayerInOut(function(isPointInside)
+                if isPointInside then
+                    exports['qb-core']:DrawText(Lang:t('text.disassemble_vehicle'),'left')
+                    listener('deliver', k)
+                else
+                    listen = false
+                    exports['qb-core']:HideText()
+                end
+            end)
+
+            local listZone = BoxZone:Create(vector3(v.list.coords.x, v.list.coords.y, v.list.coords.z), v.list.length, v.list.width, {
+                heading = v.list.heading,
+                name = "list"..k,
+                debugPoly = false,
+                minZ = v.list.coords.z - 1,
+                maxZ = v.list.coords.z + 1,
+            })
+            listZone:onPlayerInOut(function(isPointInside)
+                if isPointInside then
+                    exports['qb-core']:DrawText(Lang:t('text.email_list'),'left')
+                    listener('list', k)
+                else
+                    listen = false
+                    exports['qb-core']:HideText()
+                end
+            end)
+            scrapPoly[#scrapPoly+1] = listZone
+            scrapPoly[#scrapPoly+1] = deliverZone
+        end
+    end
+end
+
+initZones()
